@@ -1,46 +1,56 @@
+
 import pandas as pd
-import numpy as np
+import ast
 from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import MultiLabelBinarizer
 
 # Chargement des données
 df = pd.read_csv("Dataset/dataset_etudiants.csv")
 
-# Conversion des coéquipiers en interactions exploitables
-interaction_data = []
-for _, row in df.iterrows():
-    etudiant_id = row['ID_Étudiant']
-    try:
-        coequipiers = eval(row['Coéquipiers'])  # Transformation de str -> list
-        for c in coequipiers:
-            interaction_data.append((etudiant_id, c, 1))  # 1 = interaction existante
-    except:
-        pass  # Gérer erreurs de format
+# Convertir les colonnes stockant des listes sous forme réelle
+df["Coéquipiers"] = df["Coéquipiers"].apply(ast.literal_eval)
+df["Communautés"] = df["Communautés"].apply(ast.literal_eval)
+df["Compétences"] = df["Compétences"].apply(ast.literal_eval)
+df["Centres_d'Intérêt"] = df["Centres_d'Intérêt"].apply(ast.literal_eval)
 
-# Création du DataFrame des interactions
-interaction_df = pd.DataFrame(interaction_data, columns=['userID', 'itemID', 'rating'])
+# Calcul du nombre de coéquipiers uniques
+df["Nombre_Coéquipiers"] = df["Coéquipiers"].apply(lambda x: len(set(x)))
 
-# Création de la matrice utilisateur-item
-user_item_matrix = interaction_df.pivot(index='userID', columns='itemID', values='rating').fillna(0)
+# Encodage des attributs catégoriels
+mlb = MultiLabelBinarizer()
 
-# Application du KNN
-knn = NearestNeighbors(metric='cosine', algorithm='brute')
-knn.fit(user_item_matrix)
+# Encoder les communautés
+communities_encoded = pd.DataFrame(mlb.fit_transform(df["Communautés"]), columns=["Comm_" + label for label in mlb.classes_])
+# Encoder les compétences
+skills_encoded = pd.DataFrame(mlb.fit_transform(df["Compétences"]), columns=["Skill_" + label for label in mlb.classes_])
+# Encoder les centres d'intérêt
+interests_encoded = pd.DataFrame(mlb.fit_transform(df["Centres_d'Intérêt"]), columns=["Interest_" + label for label in mlb.classes_])
 
-def recommander_coequipiers(user_id, n_recommandations=3):
-    if user_id not in user_item_matrix.index:
-        return []
-    distances, indices = knn.kneighbors([user_item_matrix.loc[user_id]], n_neighbors=n_recommandations+1)
-    similar_users = indices.flatten()[1:]  # Exclure l'utilisateur lui-même
+# Fusionner toutes les features utiles et conserver les noms des colonnes
+features = pd.concat([
+    df[["Travaux_Collaboratifs", "Nombre_Interactions", "Nombre_Coéquipiers"]],
+    communities_encoded, skills_encoded, interests_encoded
+], axis=1)
+
+# Entraînement du modèle KNN avec les noms de caractéristiques correctement définis
+knn = NearestNeighbors(n_neighbors=5, metric='cosine')
+knn.fit(features)
+
+
+def recommander(id_etudiant):
+    # Trouver l'index de l'étudiant
+    index = df[df["ID_Étudiant"] == id_etudiant].index[0]
     
-    recommandations = set()
-    for u in similar_users:
-        coequipiers = set(interaction_df[interaction_df['userID'] == user_item_matrix.index[u]]['itemID'])
-        recommandations.update(coequipiers)
+    # Obtenir les données pour cet étudiant (et les mettre dans le même format que 'features')
+    student_features = features.iloc[index:index+1]  # Prendre une ligne (étudiant)
     
-    recommandations -= set(interaction_df[interaction_df['userID'] == user_id]['itemID'])
-    return list(recommandations)[:n_recommandations]
+    # Obtenir les voisins les plus proches
+    distances, indices = knn.kneighbors(student_features)
+    
+    # Récupérer les recommandations avec les IDs et les noms, en excluant l'étudiant lui-même
+    recommandations = df.iloc[indices[0]]
+    recommandations = recommandations[recommandations["ID_Étudiant"] != id_etudiant][["ID_Étudiant", "Nom"]]
+    return recommandations.to_dict(orient="records")
 
-# Exemple d'utilisation
-user_test = 1
-print(f"Coéquipiers recommandés pour l'étudiant {user_test}: {recommander_coequipiers(user_test)}")
-
+# Test avec un étudiant
+print(recommander(2))
